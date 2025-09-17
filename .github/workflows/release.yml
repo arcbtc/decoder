@@ -3,56 +3,68 @@ on:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Create github release
+
+      - name: Create GitHub release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}     # built-in token is enough for releases in *this* repo
+          TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$tag" --generate-notes
+          gh release create "$TAG" --generate-notes || \
+          gh release view "$TAG" >/dev/null
 
   pullrequest:
     needs: [release]
     runs-on: ubuntu-latest
     steps:
+      # Check out the target repo (lnbits/lnbits-extensions) with your PAT
       - uses: actions/checkout@v4
         with:
-          token: ${{ secrets.EXT_GITHUB }}
+          token: ${{ secrets.EXT_GITHUB }}          # PAT with write to lnbits/lnbits-extensions
           repository: lnbits/lnbits-extensions
-          path: './lnbits-extensions'
+          path: lnbits-extensions
+          fetch-depth: 0
 
-      - name: setup git user
+      - name: Setup git user
         run: |
           git config --global user.name "alan"
           git config --global user.email "alan@lnbits.com"
 
-      - name: Create pull request in extensions repo
+      - name: Create or update PR in lnbits-extensions
         env:
-          GH_TOKEN: ${{ secrets.EXT_GITHUB }}
-          repo_name: '${{ github.event.repository.name }}'
-          tag: '${{ github.ref_name }}'
-          branch: 'update-${{ github.event.repository.name }}-${{ github.ref_name }}'
-          title: '[UPDATE] ${{ github.event.repository.name }} to ${{ github.ref_name }}'
-          body: 'https://github.com/lnbits/${{ github.event.repository.name }}/releases/${{ github.ref_name }}'
-          archive: 'https://github.com/lnbits/${{ github.event.repository.name }}/archive/refs/tags/${{ github.ref_name }}.zip'
+          GH_TOKEN: ${{ secrets.EXT_GITHUB }}       # gh uses this
+          REPO_NAME: ${{ github.event.repository.name }}
+          TAG: ${{ github.ref_name }}
+          BRANCH: update-${{ github.event.repository.name }}-${{ github.ref_name }}
+          TITLE: "[UPDATE] ${{ github.event.repository.name }} to ${{ github.ref_name }}"
+          BODY: "https://github.com/lnbits/${{ github.event.repository.name }}/releases/${{ github.ref_name }}"
+          ARCHIVE: "https://github.com/lnbits/${{ github.event.repository.name }}/archive/refs/tags/${{ github.ref_name }}.zip"
         run: |
+          set -euo pipefail
           cd lnbits-extensions
-          git checkout -b $branch
 
-          # if there is another open PR
-          git pull origin $branch || echo "branch does not exist"
+          # create/update branch
+          git checkout -B "$BRANCH"
 
-          sh util.sh update_extension $repo_name $tag
+          # your updater
+          sh util.sh update_extension "$REPO_NAME" "$TAG"
 
           git add -A
-          git commit -am "$title"
-          git push origin $branch
+          git commit -m "$TITLE" || echo "Nothing to commit"
+          git push --set-upstream origin "$BRANCH"
 
-          # check if pr exists before creating it
+          # create PR if it doesn't exist
           gh config set pager cat
-          check=$(gh pr list -H $branch | wc -l)
-          test $check -ne 0 || gh pr create --title "$title" --body "$body" --repo lnbits/lnbits-extensions
+          if [ "$(gh pr list -H "$BRANCH" --state open | wc -l)" -eq 0 ]; then
+            gh pr create --title "$TITLE" --body "$BODY" --repo lnbits/lnbits-extensions
+          else
+            echo "PR already exists"
+          fi
